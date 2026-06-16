@@ -1,0 +1,1274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COBBLER SHOE LAUNDRY</title>
+  <link rel="icon" href="/assets/logo">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @media print {
+      .no-print { display: none !important; }
+      body { background: #fff !important; }
+      #app { padding: 0 !important; }
+    }
+    .spinner {
+      width: 26px;
+      height: 26px;
+      border: 3px solid #dbeafe;
+      border-top-color: #2563eb;
+      border-radius: 9999px;
+      animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+  <div id="app"></div>
+  <div id="modal-root"></div>
+
+  <script>
+    const BRAND_LOGO = '/assets/logo';
+
+    const state = {
+      user: null,
+      activeTab: 'overview',
+      loading: false,
+      dashboard: null,
+      customers: [],
+      invoices: [],
+      receipts: [],
+      expenses: [],
+      services: [],
+      activityLogs: [],
+      selectedCustomer: null,
+      selectedInvoice: null,
+    };
+
+    function currency(value) {
+      return `Rs ${Number(value || 0).toFixed(2)}`;
+    }
+
+    function formatDateTime(value) {
+      if (!value) return '-';
+      return new Date(value).toLocaleString();
+    }
+
+    function photoList(value) {
+      if (!value) return [];
+      if (Array.isArray(value)) return value;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return [];
+      }
+    }
+
+    async function toBase64(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    async function readFiles(files) {
+      return Promise.all(Array.from(files || []).map((file) => toBase64(file)));
+    }
+
+    async function api(url, options = {}) {
+      const requestOptions = { ...options };
+      const headers = { ...(requestOptions.headers || {}) };
+      if (requestOptions.body && !headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+      }
+
+      const response = await fetch(url, {
+        ...requestOptions,
+        headers,
+      });
+
+      const rawBody = await response.text();
+      let data = null;
+      try {
+        data = rawBody ? JSON.parse(rawBody) : null;
+      } catch {
+        data = null;
+      }
+
+      if (!response.ok) {
+        throw new Error((data && data.message) || rawBody || `Request failed (${response.status})`);
+      }
+
+      return data;
+    }
+
+    function setLoading(value) {
+      state.loading = value;
+      render();
+    }
+
+    async function loadInitialData() {
+      setLoading(true);
+      try {
+        const [dashboard, customers, invoices, receipts, expenses, services, activityLogs] = await Promise.all([
+          api('/api/dashboard'),
+          api('/api/customers'),
+          api('/api/invoices'),
+          api('/api/receipts'),
+          api('/api/expenses'),
+          api('/api/services'),
+          api('/api/activity-logs'),
+        ]);
+
+        state.dashboard = dashboard;
+        state.customers = customers;
+        state.invoices = invoices;
+        state.receipts = receipts;
+        state.expenses = expenses;
+        state.services = services;
+        state.activityLogs = activityLogs;
+      } finally {
+        state.loading = false;
+      }
+      render();
+    }
+
+    function closeModal() {
+      document.getElementById('modal-root').innerHTML = '';
+    }
+
+    function openModal(content) {
+      document.getElementById('modal-root').innerHTML = `
+        <div class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+          <div class="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-2xl bg-white shadow-2xl">
+            ${content}
+          </div>
+        </div>
+      `;
+    }
+
+    function avatar(customer, size = 'h-12 w-12') {
+      if (customer.profile_photo) {
+        return `<img src="${customer.profile_photo}" class="${size} rounded-full object-cover ring-2 ring-slate-200">`;
+      }
+      const letter = (customer.name || '?').charAt(0).toUpperCase();
+      return `<div class="${size} rounded-full bg-blue-600 text-white flex items-center justify-center font-bold ring-2 ring-slate-200">${letter}</div>`;
+    }
+
+    function categoryBadge(category) {
+      const map = {
+        VIP: 'bg-amber-100 text-amber-700',
+        Corporate: 'bg-sky-100 text-sky-700',
+        Regular: 'bg-slate-100 text-slate-700',
+      };
+      const cls = map[category] || map.Regular;
+      return `<span class="rounded-full px-2.5 py-1 text-xs font-medium ${cls}">${category || 'Regular'}</span>`;
+    }
+
+    function brandLogo(size = 'h-32', extraClasses = '') {
+      return `<img src="${BRAND_LOGO}" alt="Cobbler logo" class="${size} w-auto object-contain ${extraClasses}">`;
+    }
+
+    function renderLogin() {
+      return `
+        <div class="flex min-h-screen items-center justify-center bg-gradient-to-br from-slate-900 via-blue-900 to-slate-800 p-6">
+          <div class="w-full max-w-md rounded-2xl bg-white p-8 shadow-2xl">
+            <div class="mb-8 text-center">
+              <div class="flex justify-center">${brandLogo('h-40')}</div>
+              <div class="mt-4 text-sm text-slate-500">Shoe Laundry Billing and Accounts</div>
+            </div>
+            <form id="login-form" class="space-y-4">
+              <div>
+                <label for="login-username" class="mb-1 block text-sm font-medium text-slate-700">Username</label>
+                <input id="login-username" name="username" autocomplete="username" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-blue-500" value="admin" required>
+              </div>
+              <div>
+                <label for="login-password" class="mb-1 block text-sm font-medium text-slate-700">Password</label>
+                <input id="login-password" name="password" autocomplete="current-password" type="password" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-blue-500" value="111606" required>
+              </div>
+              <div>
+                <label for="login-pin" class="mb-1 block text-sm font-medium text-slate-700">PIN</label>
+                <input id="login-pin" name="pin" autocomplete="one-time-code" type="password" class="w-full rounded-xl border border-slate-300 px-4 py-3 outline-none focus:border-blue-500" placeholder="Optional">
+              </div>
+              <div id="login-error" class="hidden rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"></div>
+              <button class="w-full rounded-xl bg-blue-600 px-4 py-3 font-semibold text-white hover:bg-blue-700">Login</button>
+            </form>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderStats() {
+      const dashboard = state.dashboard || {};
+      const cards = [
+        ['Today Sales', currency(dashboard.todaySales)],
+        ['Monthly Sales', currency(dashboard.monthlySales)],
+        ['Total Customers', dashboard.totalCustomers || 0],
+        ['VIP Customers', dashboard.vipCustomers || 0],
+        ['New Today', dashboard.newCustomersToday || 0],
+        ['Pending Orders', dashboard.pendingOrders || 0],
+        ['Completed Orders', dashboard.completedOrders || 0],
+      ];
+
+      return `
+        <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-7">
+          ${cards.map(([label, value]) => `
+            <div class="rounded-2xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <div class="text-sm text-slate-500">${label}</div>
+              <div class="mt-2 text-2xl font-bold text-slate-900">${value}</div>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function renderOverview() {
+      const dashboard = state.dashboard || {};
+      return `
+        <div class="space-y-6">
+          ${renderStats()}
+          <div class="grid gap-6 xl:grid-cols-3">
+            <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200 xl:col-span-2">
+              <div class="mb-4 flex items-center justify-between">
+                <h2 class="text-lg font-semibold">Customer Photos</h2>
+                <span class="text-sm text-slate-500">Latest 12</span>
+              </div>
+              <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+                ${(dashboard.customerPhotos || []).map((customer) => `
+                  <button onclick="viewCustomer(${customer.id})" class="rounded-2xl border border-slate-200 p-3 text-center hover:border-blue-500 hover:bg-blue-50">
+                    <div class="mx-auto mb-2 flex justify-center">${avatar(customer, 'h-16 w-16')}</div>
+                    <div class="truncate text-sm font-medium">${customer.name}</div>
+                    <div class="mt-1">${categoryBadge(customer.category)}</div>
+                  </button>
+                `).join('') || '<div class="col-span-full text-sm text-slate-500">No customers yet.</div>'}
+              </div>
+            </div>
+            <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 class="mb-4 text-lg font-semibold">Recent Customer Activity</h2>
+              <div class="space-y-3">
+                ${(dashboard.recentCustomerActivity || []).map((item) => `
+                  <div class="rounded-xl bg-slate-50 p-3">
+                    <div class="font-medium text-slate-800">${item.action}</div>
+                    <div class="mt-1 text-sm text-slate-500">${formatDateTime(item.created_at)}</div>
+                  </div>
+                `).join('') || '<div class="text-sm text-slate-500">No activity found.</div>'}
+              </div>
+            </div>
+          </div>
+          <div class="grid gap-6 xl:grid-cols-2">
+            <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 class="mb-4 text-lg font-semibold">Recent Bills</h2>
+              <div class="space-y-3">
+                ${(dashboard.recentBills || []).map((bill) => `
+                  <button onclick="viewInvoice(${bill.id})" class="flex w-full items-center justify-between rounded-xl border border-slate-200 p-4 text-left hover:border-blue-500 hover:bg-blue-50">
+                    <div>
+                      <div class="font-medium">${bill.invoice_number}</div>
+                      <div class="text-sm text-slate-500">${bill.customer_name || 'Walk-in'} • ${bill.date}</div>
+                    </div>
+                    <div class="text-right">
+                      <div class="font-semibold">${currency(bill.total)}</div>
+                      <div class="text-xs text-slate-500">${bill.status}</div>
+                    </div>
+                  </button>
+                `).join('') || '<div class="text-sm text-slate-500">No invoices yet.</div>'}
+              </div>
+            </div>
+            <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+              <h2 class="mb-4 text-lg font-semibold">Service Revenue</h2>
+              <div class="space-y-3">
+                ${(dashboard.serviceRevenue || []).map((row) => `
+                  <div class="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3">
+                    <div class="font-medium">${row.name}</div>
+                    <div class="font-semibold">${currency(row.revenue)}</div>
+                  </div>
+                `).join('') || '<div class="text-sm text-slate-500">No service revenue yet.</div>'}
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCustomers() {
+      return `
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 class="text-2xl font-bold">Customers</h1>
+              <p class="text-sm text-slate-500">Manage categories, profile photos, and customer history.</p>
+            </div>
+            <button onclick="openCustomerModal()" class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Add Customer</button>
+          </div>
+          <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-5 py-4 font-medium">Photo</th>
+                    <th class="px-5 py-4 font-medium">Customer</th>
+                    <th class="px-5 py-4 font-medium">Category</th>
+                    <th class="px-5 py-4 font-medium">Mobile</th>
+                    <th class="px-5 py-4 font-medium">Company</th>
+                    <th class="px-5 py-4 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${state.customers.map((customer) => `
+                    <tr class="hover:bg-slate-50">
+                      <td class="px-5 py-4">${avatar(customer)}</td>
+                      <td class="px-5 py-4">
+                        <button onclick="viewCustomer(${customer.id})" class="text-left">
+                          <div class="font-medium text-slate-900">${customer.name}</div>
+                          <div class="text-slate-500">${customer.customer_id}</div>
+                        </button>
+                      </td>
+                      <td class="px-5 py-4">${categoryBadge(customer.category)}</td>
+                      <td class="px-5 py-4">${customer.mobile || '-'}</td>
+                      <td class="px-5 py-4">${customer.company_name || '-'}</td>
+                      <td class="px-5 py-4">
+                        <div class="flex gap-3">
+                          <button onclick="openCustomerModal(${customer.id})" class="text-blue-600 hover:text-blue-800">Edit</button>
+                          <button onclick="removeCustomer(${customer.id})" class="text-red-600 hover:text-red-800">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">No customers added.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderBilling() {
+      return `
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 class="text-2xl font-bold">Billing</h1>
+              <p class="text-sm text-slate-500">Create invoices, attach before and after photos, and print bills.</p>
+            </div>
+            <button onclick="openInvoiceModal()" class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Create Invoice</button>
+          </div>
+          <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-5 py-4 font-medium">Invoice</th>
+                    <th class="px-5 py-4 font-medium">Date</th>
+                    <th class="px-5 py-4 font-medium">Customer</th>
+                    <th class="px-5 py-4 font-medium">Total</th>
+                    <th class="px-5 py-4 font-medium">Status</th>
+                    <th class="px-5 py-4 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${state.invoices.map((invoice) => `
+                    <tr class="hover:bg-slate-50">
+                      <td class="px-5 py-4 font-medium">${invoice.invoice_number}</td>
+                      <td class="px-5 py-4">${invoice.date}</td>
+                      <td class="px-5 py-4">${invoice.customer_name || 'Walk-in'}</td>
+                      <td class="px-5 py-4">${currency(invoice.total)}</td>
+                      <td class="px-5 py-4">${categoryBadge(invoice.status === 'completed' ? 'VIP' : 'Regular').replace('VIP', invoice.status)}</td>
+                      <td class="px-5 py-4">
+                        <div class="flex gap-3">
+                          <button onclick="viewInvoice(${invoice.id})" class="text-blue-600 hover:text-blue-800">View</button>
+                          ${invoice.status === 'pending' ? `<button onclick="markInvoiceCompleted(${invoice.id})" class="text-emerald-600 hover:text-emerald-800">Complete</button>` : ''}
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="6" class="px-5 py-8 text-center text-slate-500">No invoices created.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderReceipts() {
+      return `
+        <div class="space-y-6">
+          <div>
+            <h1 class="text-2xl font-bold">Receipts</h1>
+            <p class="text-sm text-slate-500">Create receipts and attach receipt photos.</p>
+          </div>
+          <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-5 py-4 font-medium">Receipt</th>
+                    <th class="px-5 py-4 font-medium">Invoice</th>
+                    <th class="px-5 py-4 font-medium">Customer</th>
+                    <th class="px-5 py-4 font-medium">Payment</th>
+                    <th class="px-5 py-4 font-medium">Amount</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${state.receipts.map((receipt) => `
+                    <tr>
+                      <td class="px-5 py-4 font-medium">${receipt.receipt_number}</td>
+                      <td class="px-5 py-4">${receipt.invoice_number}</td>
+                      <td class="px-5 py-4">${receipt.customer_name || 'Walk-in'}</td>
+                      <td class="px-5 py-4">${receipt.payment_method}</td>
+                      <td class="px-5 py-4">${currency(receipt.amount_received)}</td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="5" class="px-5 py-8 text-center text-slate-500">No receipts created.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div class="border-b border-slate-200 px-5 py-4">
+              <h2 class="font-semibold">Create Receipt From Invoice</h2>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-5 py-4 font-medium">Invoice</th>
+                    <th class="px-5 py-4 font-medium">Customer</th>
+                    <th class="px-5 py-4 font-medium">Amount</th>
+                    <th class="px-5 py-4 font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${state.invoices.map((invoice) => `
+                    <tr>
+                      <td class="px-5 py-4 font-medium">${invoice.invoice_number}</td>
+                      <td class="px-5 py-4">${invoice.customer_name || 'Walk-in'}</td>
+                      <td class="px-5 py-4">${currency(invoice.total)}</td>
+                      <td class="px-5 py-4">
+                        <button onclick="openReceiptModal(${invoice.id})" class="text-blue-600 hover:text-blue-800">Create Receipt</button>
+                      </td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="4" class="px-5 py-8 text-center text-slate-500">No invoices available.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderExpenses() {
+      const total = state.expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      return `
+        <div class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div>
+              <h1 class="text-2xl font-bold">Expenses</h1>
+              <p class="text-sm text-slate-500">Track account expenses and edit entries when needed.</p>
+            </div>
+            <button onclick="openExpenseModal()" class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Add Expense</button>
+          </div>
+          <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+            <div class="text-sm text-slate-500">Total Expenses</div>
+            <div class="mt-2 text-3xl font-bold text-red-600">${currency(total)}</div>
+          </div>
+          <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-5 py-4 font-medium">Date</th>
+                    <th class="px-5 py-4 font-medium">Category</th>
+                    <th class="px-5 py-4 font-medium">Description</th>
+                    <th class="px-5 py-4 font-medium">Amount</th>
+                    <th class="px-5 py-4 font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${state.expenses.map((expense) => `
+                    <tr>
+                      <td class="px-5 py-4">${expense.date}</td>
+                      <td class="px-5 py-4">${expense.category}</td>
+                      <td class="px-5 py-4">${expense.description || '-'}</td>
+                      <td class="px-5 py-4">${currency(expense.amount)}</td>
+                      <td class="px-5 py-4">
+                        <div class="flex gap-3">
+                          <button onclick="openExpenseModal(${expense.id})" class="text-blue-600 hover:text-blue-800">Edit</button>
+                          <button onclick="removeExpense(${expense.id})" class="text-red-600 hover:text-red-800">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="5" class="px-5 py-8 text-center text-slate-500">No expenses added.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderActivity() {
+      return `
+        <div class="space-y-6">
+          <div>
+            <h1 class="text-2xl font-bold">Activity Log</h1>
+            <p class="text-sm text-slate-500">Latest changes saved to the database.</p>
+          </div>
+          <div class="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-5 py-4 font-medium">Date</th>
+                    <th class="px-5 py-4 font-medium">User</th>
+                    <th class="px-5 py-4 font-medium">Action</th>
+                    <th class="px-5 py-4 font-medium">Table</th>
+                    <th class="px-5 py-4 font-medium">IP</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${state.activityLogs.map((log) => `
+                    <tr>
+                      <td class="px-5 py-4">${formatDateTime(log.created_at)}</td>
+                      <td class="px-5 py-4">${log.username || 'System'}</td>
+                      <td class="px-5 py-4">${log.action}</td>
+                      <td class="px-5 py-4">${log.table_name || '-'}</td>
+                      <td class="px-5 py-4">${log.ip_address || '-'}</td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="5" class="px-5 py-8 text-center text-slate-500">No activity logs found.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderCustomerDetail() {
+      const customer = state.selectedCustomer;
+      if (!customer) return '';
+
+      return `
+        <div class="space-y-6">
+          <button onclick="state.selectedCustomer = null; render();" class="text-sm font-medium text-blue-600 hover:text-blue-800">Back to Customers</button>
+          <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+            <div class="flex flex-col gap-6 md:flex-row md:items-start">
+              <div>${avatar(customer, 'h-24 w-24')}</div>
+              <div class="flex-1">
+                <div class="flex flex-wrap items-center gap-3">
+                  <h1 class="text-2xl font-bold">${customer.name}</h1>
+                  ${categoryBadge(customer.category)}
+                </div>
+                <div class="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                  <div><span class="font-medium text-slate-900">Customer ID:</span> ${customer.customer_id}</div>
+                  <div><span class="font-medium text-slate-900">Mobile:</span> ${customer.mobile || '-'}</div>
+                  <div><span class="font-medium text-slate-900">Email:</span> ${customer.email || '-'}</div>
+                  <div><span class="font-medium text-slate-900">Address:</span> ${customer.address || '-'}</div>
+                  <div><span class="font-medium text-slate-900">Company:</span> ${customer.company_name || '-'}</div>
+                  <div><span class="font-medium text-slate-900">Total Spent:</span> ${currency(customer.totalSpent)}</div>
+                </div>
+                <div class="mt-3 text-sm text-slate-600"><span class="font-medium text-slate-900">Notes:</span> ${customer.notes || '-'}</div>
+                <div class="mt-5 flex gap-3">
+                  <button onclick="openCustomerModal(${customer.id})" class="rounded-xl bg-blue-600 px-4 py-2 text-white hover:bg-blue-700">Edit Customer</button>
+                  <button onclick="openInvoiceModal(${customer.id})" class="rounded-xl border border-blue-600 px-4 py-2 text-blue-600 hover:bg-blue-50">Create Invoice</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
+            <h2 class="mb-4 text-lg font-semibold">Order History</h2>
+            <div class="overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-4 py-3 font-medium">Invoice</th>
+                    <th class="px-4 py-3 font-medium">Date</th>
+                    <th class="px-4 py-3 font-medium">Total</th>
+                    <th class="px-4 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${(customer.invoices || []).map((invoice) => `
+                    <tr class="hover:bg-slate-50">
+                      <td class="px-4 py-3"><button onclick="viewInvoice(${invoice.id})" class="font-medium text-blue-600 hover:text-blue-800">${invoice.invoice_number}</button></td>
+                      <td class="px-4 py-3">${invoice.date}</td>
+                      <td class="px-4 py-3">${currency(invoice.total)}</td>
+                      <td class="px-4 py-3">${invoice.status}</td>
+                    </tr>
+                  `).join('') || '<tr><td colspan="4" class="px-4 py-8 text-center text-slate-500">No orders yet.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderInvoiceDetail() {
+      const invoice = state.selectedInvoice;
+      if (!invoice) return '';
+
+      const beforePhotos = photoList(invoice.before_service_photos);
+      const afterPhotos = photoList(invoice.after_service_photos);
+
+      return `
+        <div class="space-y-6">
+          <button onclick="state.selectedInvoice = null; render();" class="text-sm font-medium text-blue-600 hover:text-blue-800 no-print">Back to Billing</button>
+          <div class="rounded-2xl bg-white p-8 shadow-sm ring-1 ring-slate-200">
+            <div class="border-b border-slate-200 pb-6 text-center">
+              <div class="flex justify-center">${brandLogo('h-36')}</div>
+              <p class="mt-3 text-sm text-slate-500">Invoice and Service Record</p>
+            </div>
+            <div class="mt-6 flex flex-col gap-4 md:flex-row md:justify-between">
+              <div>
+                <div class="text-sm text-slate-500">Invoice Number</div>
+                <div class="text-2xl font-bold">${invoice.invoice_number}</div>
+              </div>
+              <div class="text-left md:text-right">
+                <div class="text-sm text-slate-500">Invoice Date</div>
+                <div class="font-semibold">${invoice.date}</div>
+                <div class="mt-2 text-sm text-slate-500">Status</div>
+                <div class="font-semibold">${invoice.status}</div>
+              </div>
+            </div>
+            <div class="mt-6 rounded-xl bg-slate-50 p-4">
+              <div class="text-sm text-slate-500">Customer</div>
+              <div class="font-semibold">${invoice.customer_name || 'Walk-in'}</div>
+            </div>
+            <div class="mt-6 overflow-x-auto">
+              <table class="min-w-full text-sm">
+                <thead class="bg-slate-50 text-left text-slate-500">
+                  <tr>
+                    <th class="px-4 py-3 font-medium">Service</th>
+                    <th class="px-4 py-3 font-medium text-right">Qty</th>
+                    <th class="px-4 py-3 font-medium text-right">Rate</th>
+                    <th class="px-4 py-3 font-medium text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-200">
+                  ${(invoice.items || []).map((item) => `
+                    <tr>
+                      <td class="px-4 py-3">${item.service_name}</td>
+                      <td class="px-4 py-3 text-right">${item.quantity}</td>
+                      <td class="px-4 py-3 text-right">${currency(item.rate)}</td>
+                      <td class="px-4 py-3 text-right">${currency(Number(item.quantity) * Number(item.rate))}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+            ${beforePhotos.length ? `
+              <div class="mt-6">
+                <h2 class="mb-3 text-lg font-semibold">Before Service Photos</h2>
+                <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  ${beforePhotos.map((photo) => `<img src="${photo}" class="h-32 w-full rounded-xl object-cover ring-1 ring-slate-200">`).join('')}
+                </div>
+              </div>
+            ` : ''}
+            ${afterPhotos.length ? `
+              <div class="mt-6">
+                <h2 class="mb-3 text-lg font-semibold">After Service Photos</h2>
+                <div class="grid grid-cols-2 gap-3 md:grid-cols-4">
+                  ${afterPhotos.map((photo) => `<img src="${photo}" class="h-32 w-full rounded-xl object-cover ring-1 ring-slate-200">`).join('')}
+                </div>
+              </div>
+            ` : ''}
+            <div class="mt-6 border-t border-slate-200 pt-6 text-right">
+              <div class="text-sm text-slate-500">Total</div>
+              <div class="text-3xl font-bold">${currency(invoice.total)}</div>
+            </div>
+          </div>
+          <div class="flex flex-wrap justify-center gap-3 no-print">
+            ${invoice.status === 'pending' ? `<button onclick="markInvoiceCompleted(${invoice.id})" class="rounded-xl bg-emerald-600 px-4 py-2.5 font-medium text-white hover:bg-emerald-700">Mark Completed</button>` : ''}
+            <button onclick="openReceiptModal(${invoice.id})" class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Create Receipt</button>
+            <button onclick="window.print()" class="rounded-xl border border-slate-300 px-4 py-2.5 font-medium hover:bg-slate-50">Print Invoice</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderContent() {
+      if (state.selectedCustomer) return renderCustomerDetail();
+      if (state.selectedInvoice) return renderInvoiceDetail();
+
+      switch (state.activeTab) {
+        case 'overview': return renderOverview();
+        case 'customers': return renderCustomers();
+        case 'billing': return renderBilling();
+        case 'receipts': return renderReceipts();
+        case 'expenses': return renderExpenses();
+        case 'activity': return renderActivity();
+        default: return renderOverview();
+      }
+    }
+
+    function renderApp() {
+      const tabs = [
+        ['overview', 'Dashboard'],
+        ['customers', 'Customers'],
+        ['billing', 'Billing'],
+        ['receipts', 'Receipts'],
+        ['expenses', 'Expenses'],
+        ['activity', 'Activity Log'],
+      ];
+
+      return `
+        <div class="flex min-h-screen">
+          <aside class="no-print hidden w-72 flex-col bg-slate-900 px-6 py-8 text-white lg:flex">
+            <div class="mb-8">
+              <div class="rounded-2xl bg-white p-4">
+                ${brandLogo('h-28 mx-auto')}
+              </div>
+              <div class="mt-3 text-center text-sm text-slate-400">Shoe Laundry ERP</div>
+            </div>
+            <nav class="space-y-2">
+              ${tabs.map(([key, label]) => `
+                <button onclick="switchTab('${key}')" class="flex w-full items-center rounded-xl px-4 py-3 text-left ${state.activeTab === key ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}">
+                  ${label}
+                </button>
+              `).join('')}
+            </nav>
+            <div class="mt-auto rounded-2xl bg-slate-800 p-4">
+              <div class="font-medium">${state.user.username}</div>
+              <div class="text-sm text-slate-400">${state.user.role}</div>
+              <button onclick="logout()" class="mt-4 w-full rounded-xl bg-red-600 px-4 py-2.5 font-medium text-white hover:bg-red-700">Logout</button>
+            </div>
+          </aside>
+          <main class="flex-1 p-4 sm:p-6 lg:p-8">
+            <div class="mb-6 flex items-center justify-between lg:hidden">
+              <div class="flex items-center gap-3">
+                ${brandLogo('h-18')}
+                <div>
+                <div class="text-sm text-slate-500">${tabs.find(([key]) => key === state.activeTab)?.[1] || ''}</div>
+                </div>
+              </div>
+              <button onclick="logout()" class="rounded-xl bg-red-600 px-4 py-2 text-sm font-medium text-white">Logout</button>
+            </div>
+            <div class="mb-6 grid grid-cols-2 gap-2 lg:hidden">
+              ${tabs.map(([key, label]) => `
+                <button onclick="switchTab('${key}')" class="rounded-xl px-3 py-2 text-sm font-medium ${state.activeTab === key ? 'bg-blue-600 text-white' : 'bg-white text-slate-700 ring-1 ring-slate-200'}">${label}</button>
+              `).join('')}
+            </div>
+            ${state.loading ? `
+              <div class="flex min-h-[50vh] items-center justify-center">
+                <div class="flex items-center gap-3 rounded-2xl bg-white px-5 py-4 shadow-sm ring-1 ring-slate-200">
+                  <div class="spinner"></div>
+                  <div class="font-medium text-slate-700">Loading data...</div>
+                </div>
+              </div>
+            ` : renderContent()}
+          </main>
+        </div>
+      `;
+    }
+
+    function render() {
+      document.getElementById('app').innerHTML = state.user ? renderApp() : renderLogin();
+      attachEvents();
+    }
+
+    function attachEvents() {
+      const loginForm = document.getElementById('login-form');
+      if (loginForm) {
+        loginForm.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const errorBox = document.getElementById('login-error');
+          try {
+            const data = await api('/api/auth/login', {
+              method: 'POST',
+              body: JSON.stringify({
+                username: document.getElementById('login-username').value,
+                password: document.getElementById('login-password').value,
+                pin: document.getElementById('login-pin').value,
+              }),
+            });
+
+            localStorage.setItem('user', JSON.stringify(data.user));
+            localStorage.setItem('token', data.token);
+            state.user = data.user;
+            await loadInitialData();
+          } catch (error) {
+            errorBox.textContent = error.message;
+            errorBox.classList.remove('hidden');
+          }
+        });
+      }
+    }
+
+    function switchTab(tab) {
+      state.activeTab = tab;
+      state.selectedCustomer = null;
+      state.selectedInvoice = null;
+      render();
+    }
+
+    function logout() {
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      state.user = null;
+      state.selectedCustomer = null;
+      state.selectedInvoice = null;
+      closeModal();
+      render();
+    }
+
+    async function viewCustomer(id) {
+      state.selectedCustomer = await api(`/api/customers/${id}`);
+      state.selectedInvoice = null;
+      state.activeTab = 'customers';
+      render();
+    }
+
+    async function viewInvoice(id) {
+      state.selectedInvoice = await api(`/api/invoices/${id}`);
+      state.selectedCustomer = null;
+      state.activeTab = 'billing';
+      render();
+    }
+
+    async function markInvoiceCompleted(id) {
+      await api(`/api/invoices/${id}/status`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'completed' }),
+      });
+      await loadInitialData();
+      if (state.selectedInvoice && Number(state.selectedInvoice.id) === Number(id)) {
+        await viewInvoice(id);
+      }
+    }
+
+    async function removeCustomer(id) {
+      if (!confirm('Delete this customer?')) return;
+      await api(`/api/customers/${id}`, { method: 'DELETE' });
+      if (state.selectedCustomer && Number(state.selectedCustomer.id) === Number(id)) {
+        state.selectedCustomer = null;
+      }
+      await loadInitialData();
+    }
+
+    async function removeExpense(id) {
+      if (!confirm('Delete this expense?')) return;
+      await api(`/api/expenses/${id}`, { method: 'DELETE' });
+      await loadInitialData();
+    }
+
+    function openCustomerModal(id) {
+      const customer = state.customers.find((item) => Number(item.id) === Number(id)) || null;
+      openModal(`
+        <div class="p-6">
+          <div class="mb-6 flex items-center justify-between">
+            <h2 class="text-xl font-semibold">${customer ? 'Edit Customer' : 'Add Customer'}</h2>
+            <button onclick="closeModal()" class="rounded-lg px-3 py-1.5 text-slate-500 hover:bg-slate-100">Close</button>
+          </div>
+          <form id="customer-form" class="space-y-4">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm font-medium">Name</label>
+                <input id="customer-name" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${customer ? customer.name : ''}" required>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Mobile</label>
+                <input id="customer-mobile" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${customer ? customer.mobile : ''}" required>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Email</label>
+                <input id="customer-email" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${customer && customer.email ? customer.email : ''}">
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Category</label>
+                <select id="customer-category" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                  <option value="Regular" ${customer && customer.category === 'Regular' ? 'selected' : ''}>Regular</option>
+                  <option value="VIP" ${customer && customer.category === 'VIP' ? 'selected' : ''}>VIP</option>
+                  <option value="Corporate" ${customer && customer.category === 'Corporate' ? 'selected' : ''}>Corporate</option>
+                </select>
+              </div>
+              <div class="md:col-span-2">
+                <label class="mb-1 block text-sm font-medium">Address</label>
+                <textarea id="customer-address" class="w-full rounded-xl border border-slate-300 px-4 py-3">${customer && customer.address ? customer.address : ''}</textarea>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Company Name</label>
+                <input id="customer-company" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${customer && customer.company_name ? customer.company_name : ''}">
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Profile Photo</label>
+                <input id="customer-photo" type="file" accept="image/*" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+              </div>
+              <div class="md:col-span-2">
+                <label class="mb-1 block text-sm font-medium">Notes</label>
+                <textarea id="customer-notes" class="w-full rounded-xl border border-slate-300 px-4 py-3">${customer && customer.notes ? customer.notes : ''}</textarea>
+              </div>
+              <div class="md:col-span-2">
+                <div class="mb-2 text-sm font-medium">Preview</div>
+                <div id="customer-photo-preview" class="flex min-h-[88px] items-center rounded-xl border border-dashed border-slate-300 p-3">
+                  ${customer && customer.profile_photo ? `<img src="${customer.profile_photo}" class="h-20 w-20 rounded-full object-cover">` : '<span class="text-sm text-slate-500">No photo selected</span>'}
+                </div>
+              </div>
+            </div>
+            <div id="customer-form-error" class="hidden rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700"></div>
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" onclick="closeModal()" class="rounded-xl border border-slate-300 px-4 py-2.5 font-medium hover:bg-slate-50">Cancel</button>
+              <button class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Save Customer</button>
+            </div>
+          </form>
+        </div>
+      `);
+
+      let profilePhoto = customer ? customer.profile_photo : null;
+      const photoInput = document.getElementById('customer-photo');
+      const preview = document.getElementById('customer-photo-preview');
+
+      photoInput.addEventListener('change', async (event) => {
+        const files = event.target.files;
+        if (!files || !files.length) return;
+        profilePhoto = await toBase64(files[0]);
+        preview.innerHTML = `<img src="${profilePhoto}" class="h-20 w-20 rounded-full object-cover">`;
+      });
+
+      document.getElementById('customer-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const errorBox = document.getElementById('customer-form-error');
+        errorBox.classList.add('hidden');
+        errorBox.textContent = '';
+        const payload = {
+          name: document.getElementById('customer-name').value.trim(),
+          mobile: document.getElementById('customer-mobile').value.trim(),
+          email: document.getElementById('customer-email').value.trim(),
+          category: document.getElementById('customer-category').value,
+          address: document.getElementById('customer-address').value.trim(),
+          companyName: document.getElementById('customer-company').value.trim(),
+          notes: document.getElementById('customer-notes').value.trim(),
+          profilePhoto,
+        };
+
+        try {
+          if (customer) {
+            await api(`/api/customers/${customer.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+          } else {
+            await api('/api/customers', { method: 'POST', body: JSON.stringify(payload) });
+          }
+
+          closeModal();
+          await loadInitialData();
+          if (customer) {
+            await viewCustomer(customer.id);
+          }
+        } catch (error) {
+          errorBox.textContent = error.message;
+          errorBox.classList.remove('hidden');
+        }
+      });
+    }
+
+    function openExpenseModal(id) {
+      const expense = state.expenses.find((item) => Number(item.id) === Number(id)) || null;
+      const today = new Date().toISOString().slice(0, 10);
+      openModal(`
+        <div class="p-6">
+          <div class="mb-6 flex items-center justify-between">
+            <h2 class="text-xl font-semibold">${expense ? 'Edit Expense' : 'Add Expense'}</h2>
+            <button onclick="closeModal()" class="rounded-lg px-3 py-1.5 text-slate-500 hover:bg-slate-100">Close</button>
+          </div>
+          <form id="expense-form" class="space-y-4">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm font-medium">Category</label>
+                <select id="expense-category" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                  ${['Rent', 'Electricity', 'Salary', 'Cleaning Materials', 'Miscellaneous'].map((item) => `
+                    <option value="${item}" ${expense && expense.category === item ? 'selected' : ''}>${item}</option>
+                  `).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Date</label>
+                <input id="expense-date" type="date" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${expense ? expense.date : today}" required>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Amount</label>
+                <input id="expense-amount" type="number" step="0.01" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${expense ? expense.amount : ''}" required>
+              </div>
+              <div class="md:col-span-2">
+                <label class="mb-1 block text-sm font-medium">Description</label>
+                <textarea id="expense-description" class="w-full rounded-xl border border-slate-300 px-4 py-3">${expense && expense.description ? expense.description : ''}</textarea>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" onclick="closeModal()" class="rounded-xl border border-slate-300 px-4 py-2.5 font-medium hover:bg-slate-50">Cancel</button>
+              <button class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Save Expense</button>
+            </div>
+          </form>
+        </div>
+      `);
+
+      document.getElementById('expense-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const payload = {
+          category: document.getElementById('expense-category').value,
+          date: document.getElementById('expense-date').value,
+          amount: document.getElementById('expense-amount').value,
+          description: document.getElementById('expense-description').value,
+        };
+
+        if (expense) {
+          await api(`/api/expenses/${expense.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+        } else {
+          await api('/api/expenses', { method: 'POST', body: JSON.stringify(payload) });
+        }
+
+        closeModal();
+        await loadInitialData();
+      });
+    }
+
+    function openReceiptModal(invoiceId) {
+      const invoice = state.invoices.find((item) => Number(item.id) === Number(invoiceId));
+      if (!invoice) return;
+
+      openModal(`
+        <div class="p-6">
+          <div class="mb-6 flex items-center justify-between">
+            <h2 class="text-xl font-semibold">Create Receipt</h2>
+            <button onclick="closeModal()" class="rounded-lg px-3 py-1.5 text-slate-500 hover:bg-slate-100">Close</button>
+          </div>
+          <div class="mb-6 rounded-xl bg-slate-50 p-4">
+            <div class="text-sm text-slate-500">Invoice</div>
+            <div class="font-semibold">${invoice.invoice_number}</div>
+            <div class="mt-1 text-lg font-bold text-blue-700">${currency(invoice.total)}</div>
+          </div>
+          <form id="receipt-form" class="space-y-4">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm font-medium">Payment Method</label>
+                <select id="receipt-method" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                  <option>Cash</option>
+                  <option>UPI</option>
+                  <option>Card</option>
+                  <option>Bank Transfer</option>
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Amount Received</label>
+                <input id="receipt-amount" type="number" step="0.01" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${invoice.total}" required>
+              </div>
+              <div class="md:col-span-2">
+                <label class="mb-1 block text-sm font-medium">Receipt Photos</label>
+                <input id="receipt-photos" type="file" accept="image/*" multiple class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                <div id="receipt-photo-preview" class="mt-3 grid grid-cols-3 gap-3"></div>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" onclick="closeModal()" class="rounded-xl border border-slate-300 px-4 py-2.5 font-medium hover:bg-slate-50">Cancel</button>
+              <button class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Save Receipt</button>
+            </div>
+          </form>
+        </div>
+      `);
+
+      let receiptPhotos = [];
+      document.getElementById('receipt-photos').addEventListener('change', async (event) => {
+        receiptPhotos = await readFiles(event.target.files);
+        document.getElementById('receipt-photo-preview').innerHTML = receiptPhotos.map((photo) => `<img src="${photo}" class="h-24 w-full rounded-xl object-cover ring-1 ring-slate-200">`).join('');
+      });
+
+      document.getElementById('receipt-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const amountReceived = Number(document.getElementById('receipt-amount').value);
+        await api('/api/receipts', {
+          method: 'POST',
+          body: JSON.stringify({
+            invoice_id: invoice.id,
+            payment_method: document.getElementById('receipt-method').value,
+            amount_received: amountReceived,
+            balance_amount: Number(invoice.total) - amountReceived,
+            notes: '',
+            receiptPhotos,
+          }),
+        });
+        closeModal();
+        await loadInitialData();
+      });
+    }
+
+    function openInvoiceModal(customerId) {
+      const today = new Date().toISOString().slice(0, 10);
+      const selectedCustomerId = customerId || '';
+      openModal(`
+        <div class="p-6">
+          <div class="mb-6 flex items-center justify-between">
+            <h2 class="text-xl font-semibold">Create Invoice</h2>
+            <button onclick="closeModal()" class="rounded-lg px-3 py-1.5 text-slate-500 hover:bg-slate-100">Close</button>
+          </div>
+          <form id="invoice-form" class="space-y-5">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm font-medium">Customer</label>
+                <select id="invoice-customer" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                  <option value="">Walk-in</option>
+                  ${state.customers.map((customer) => `<option value="${customer.id}" ${Number(selectedCustomerId) === Number(customer.id) ? 'selected' : ''}>${customer.name} (${customer.customer_id})</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Date</label>
+                <input id="invoice-date" type="date" class="w-full rounded-xl border border-slate-300 px-4 py-3" value="${today}" required>
+              </div>
+            </div>
+            <div>
+              <div class="mb-3 flex items-center justify-between">
+                <label class="text-sm font-medium">Items</label>
+                <button type="button" onclick="window.addInvoiceItemRow()" class="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium hover:bg-slate-50">Add Item</button>
+              </div>
+              <div id="invoice-items" class="space-y-3"></div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-2">
+              <div>
+                <label class="mb-1 block text-sm font-medium">Before Service Photos</label>
+                <input id="before-photos" type="file" accept="image/*" multiple class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                <div id="before-preview" class="mt-3 grid grid-cols-3 gap-3"></div>
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">After Service Photos</label>
+                <input id="after-photos" type="file" accept="image/*" multiple class="w-full rounded-xl border border-slate-300 px-4 py-3">
+                <div id="after-preview" class="mt-3 grid grid-cols-3 gap-3"></div>
+              </div>
+            </div>
+            <div class="grid gap-4 md:grid-cols-3">
+              <div>
+                <label class="mb-1 block text-sm font-medium">Discount (%)</label>
+                <input id="invoice-discount" type="number" min="0" value="0" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+              </div>
+              <div>
+                <label class="mb-1 block text-sm font-medium">Tax (%)</label>
+                <input id="invoice-tax" type="number" min="0" value="0" class="w-full rounded-xl border border-slate-300 px-4 py-3">
+              </div>
+              <div class="rounded-xl bg-slate-50 px-4 py-3">
+                <div class="text-sm text-slate-500">Estimated Total</div>
+                <div id="invoice-total" class="mt-1 text-xl font-bold">${currency(0)}</div>
+              </div>
+            </div>
+            <div class="flex justify-end gap-3 pt-2">
+              <button type="button" onclick="closeModal()" class="rounded-xl border border-slate-300 px-4 py-2.5 font-medium hover:bg-slate-50">Cancel</button>
+              <button class="rounded-xl bg-blue-600 px-4 py-2.5 font-medium text-white hover:bg-blue-700">Create Invoice</button>
+            </div>
+          </form>
+        </div>
+      `);
+
+      let beforePhotos = [];
+      let afterPhotos = [];
+      let itemCounter = 0;
+
+      function calculateTotal() {
+        const rows = Array.from(document.querySelectorAll('.invoice-item-row'));
+        const discount = Number(document.getElementById('invoice-discount').value || 0);
+        const tax = Number(document.getElementById('invoice-tax').value || 0);
+        const subtotal = rows.reduce((sum, row) => {
+          const qty = Number(row.querySelector('.item-qty').value || 0);
+          const rate = Number(row.querySelector('.item-rate').value || 0);
+          return sum + qty * rate;
+        }, 0);
+        const discountAmount = (subtotal * discount) / 100;
+        const taxable = subtotal - discountAmount;
+        const taxAmount = (taxable * tax) / 100;
+        document.getElementById('invoice-total').textContent = currency(taxable + taxAmount);
+      }
+
+      function renderItemRow(serviceId) {
+        const defaultService = state.services.find((service) => Number(service.id) === Number(serviceId)) || state.services[0];
+        itemCounter += 1;
+        const wrapper = document.createElement('div');
+        wrapper.className = 'invoice-item-row grid gap-3 md:grid-cols-12';
+        wrapper.innerHTML = `
+          <div class="md:col-span-5">
+            <select class="item-service w-full rounded-xl border border-slate-300 px-4 py-3">
+              ${state.services.map((service) => `<option value="${service.id}" ${Number(service.id) === Number(defaultService.id) ? 'selected' : ''}>${service.name}</option>`).join('')}
+            </select>
+          </div>
+          <div class="md:col-span-2">
+            <input class="item-qty w-full rounded-xl border border-slate-300 px-4 py-3" type="number" min="1" value="1">
+          </div>
+          <div class="md:col-span-3">
+            <input class="item-rate w-full rounded-xl border border-slate-300 px-4 py-3" type="number" step="0.01" value="${defaultService.price}">
+          </div>
+          <div class="md:col-span-2">
+            <button type="button" class="remove-item w-full rounded-xl border border-red-300 px-4 py-3 font-medium text-red-600 hover:bg-red-50">Remove</button>
+          </div>
+        `;
+        document.getElementById('invoice-items').appendChild(wrapper);
+
+        wrapper.querySelector('.item-service').addEventListener('change', (event) => {
+          const service = state.services.find((item) => Number(item.id) === Number(event.target.value));
+          wrapper.querySelector('.item-rate').value = service ? service.price : 0;
+          calculateTotal();
+        });
+        wrapper.querySelector('.item-qty').addEventListener('input', calculateTotal);
+        wrapper.querySelector('.item-rate').addEventListener('input', calculateTotal);
+        wrapper.querySelector('.remove-item').addEventListener('click', () => {
+          wrapper.remove();
+          calculateTotal();
+        });
+      }
+
+      window.addInvoiceItemRow = () => {
+        renderItemRow();
+        calculateTotal();
+      };
+
+      renderItemRow();
+      calculateTotal();
+
+      document.getElementById('invoice-discount').addEventListener('input', calculateTotal);
+      document.getElementById('invoice-tax').addEventListener('input', calculateTotal);
+
+      document.getElementById('before-photos').addEventListener('change', async (event) => {
+        beforePhotos = await readFiles(event.target.files);
+        document.getElementById('before-preview').innerHTML = beforePhotos.map((photo) => `<img src="${photo}" class="h-24 w-full rounded-xl object-cover ring-1 ring-slate-200">`).join('');
+      });
+
+      document.getElementById('after-photos').addEventListener('change', async (event) => {
+        afterPhotos = await readFiles(event.target.files);
+        document.getElementById('after-preview').innerHTML = afterPhotos.map((photo) => `<img src="${photo}" class="h-24 w-full rounded-xl object-cover ring-1 ring-slate-200">`).join('');
+      });
+
+      document.getElementById('invoice-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const items = Array.from(document.querySelectorAll('.invoice-item-row')).map((row) => ({
+          service_id: Number(row.querySelector('.item-service').value),
+          quantity: Number(row.querySelector('.item-qty').value),
+          rate: Number(row.querySelector('.item-rate').value),
+        })).filter((item) => item.quantity > 0);
+
+        await api('/api/invoices', {
+          method: 'POST',
+          body: JSON.stringify({
+            customer_id: document.getElementById('invoice-customer').value || null,
+            date: document.getElementById('invoice-date').value,
+            items,
+            discount: Number(document.getElementById('invoice-discount').value || 0),
+            tax: Number(document.getElementById('invoice-tax').value || 0),
+            notes: '',
+            beforeServicePhotos: beforePhotos,
+            afterServicePhotos: afterPhotos,
+          }),
+        });
+
+        delete window.addInvoiceItemRow;
+        closeModal();
+        await loadInitialData();
+      });
+    }
+
+    async function init() {
+      const savedUser = localStorage.getItem('user');
+      if (savedUser) {
+        state.user = JSON.parse(savedUser);
+        await loadInitialData();
+      } else {
+        render();
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
